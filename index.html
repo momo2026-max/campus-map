@@ -851,7 +851,7 @@ main {
 .map-overlay {
   position: absolute;
   z-index: 2;
-  top: 14px;
+  top: 68px;
   left: 14px;
   width: min(320px, calc(100% - 28px));
   background: var(--surface);
@@ -862,6 +862,31 @@ main {
   backdrop-filter: blur(8px);
   animation: pop-in .5s var(--ease-spring);
 }
+/* 工具面板：可收起 */
+.tools-toggle {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  left: 14px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--brand);
+  border-radius: 50%;
+  box-shadow: var(--shadow);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all .22s var(--ease-spring);
+  backdrop-filter: blur(8px);
+}
+.tools-toggle:hover { transform: translateY(-2px) scale(1.06); }
+.tools-toggle.on { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+.map-overlay.collapsed { display: none; }
 .map-overlay h3 { margin: 0 0 10px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .map-overlay .row { display: flex; gap: 8px; margin-bottom: 8px; }
 .map-overlay select, .map-overlay input {
@@ -1391,6 +1416,7 @@ footer {
     <div class="map-panel">
       <div id="map"></div>
       <div class="map-watermark" id="mapWatermark"></div>
+      <button class="tools-toggle on" id="btnToolsToggle" type="button" title="收起工具面板">🧰</button>
       <div class="map-overlay" id="routePanel">
         <h3>🚶 步行路径规划</h3>
         <div class="row">
@@ -1885,33 +1911,107 @@ function drawMask() {
   L.polygon([outer, inner], { stroke: false, fillColor: t.ink, fillOpacity: .42, interactive: false }).addTo(maskLayer);
 }
 
+/* 手绘校园图配色（按建筑类别） */
+const PAPER_CAT = {
+  "标志建筑": "#c0553f", "图书馆": "#b8860b", "教学楼": "#8a6fb0",
+  "食堂": "#d98a3a", "宿舍": "#5f8f6a", "运动": "#3f8fa8",
+  "校门": "#a0522d", "交通": "#5f7080", "医疗": "#c05a7a",
+  "行政楼": "#7a6a9a", "其他": "#9a8a72"
+};
+
 function drawPaper() {
   const c = CAMPUSES[currentCampus], t = th();
   paperLayer.clearLayers();
-  const pad = 0.0016;
+  const pad = 0.0032;
   const ys = c.boundary.map(p => p[0]), xs = c.boundary.map(p => p[1]);
-  const bounds = [[Math.min(...ys) - pad, Math.min(...xs) - pad], [Math.max(...ys) + pad, Math.max(...xs) + pad]];
-  // 纸面底图（纯白纸面 + 主题色粗边框，高对比）
-  L.rectangle(bounds, { color: t.brand, weight: 3, opacity: .85, fillColor: "#ffffff", fillOpacity: 1 }).addTo(paperLayer);
-  // 主干道（连接主要建筑的虚线）
-  const road = c.buildings.slice(0, 18).map(b => [b.lat, b.lng]);
-  if (road.length > 1) {
-    L.polyline(road, { color: t.paperLine, weight: 4, opacity: .7, lineCap: "round", lineJoin: "round" }).addTo(paperLayer);
-  }
-  // 建筑色块（按类别大小区分）
+  const minLat = Math.min(...ys) - pad, maxLat = Math.max(...ys) + pad;
+  const minLng = Math.min(...xs) - pad, maxLng = Math.max(...xs) + pad;
   const mLat = 111320, mLng = 111320 * Math.cos(c.center[0] * Math.PI / 180);
+
+  // 1) 纸面（测绘纸）
+  L.rectangle([[minLat, minLng], [maxLat, maxLng]], {
+    color: "#e0d6c2", weight: 2, opacity: .9, fillColor: "#fdfbf5", fillOpacity: 1, interactive: false
+  }).addTo(paperLayer);
+
+  // 2) 方格底纹
+  const gridLines = [];
+  for (let i = 1; i < 12; i++) {
+    const la = minLat + (maxLat - minLat) * i / 12;
+    gridLines.push([[la, minLng], [la, maxLng]]);
+  }
+  for (let j = 1; j < 12; j++) {
+    const ln = minLng + (maxLng - minLng) * j / 12;
+    gridLines.push([[minLat, ln], [maxLat, ln]]);
+  }
+  gridLines.forEach(g => L.polyline(g, { color: "#ece4d4", weight: 1, opacity: .85, interactive: false }).addTo(paperLayer));
+
+  // 3) 草地（校园边界）+ 手绘描边
+  L.polygon(c.boundary, {
+    color: "#8fae7a", weight: 2.5, opacity: .85, dashArray: "7 6",
+    fillColor: "#e2ecd4", fillOpacity: .92, interactive: false
+  }).addTo(paperLayer);
+  L.polygon(c.boundary, { color: t.brand, weight: 8, opacity: .07, fill: false, interactive: false }).addTo(paperLayer);
+
+  // 4) 路网：每栋建筑连最近的 2 栋，双描边做出马路质感
+  const segs = [], seen = new Set();
+  c.buildings.forEach((a, i) => {
+    c.buildings
+      .map((b, j) => ({ j: j, d: (a.lat - b.lat) * (a.lat - b.lat) + (a.lng - b.lng) * (a.lng - b.lng) }))
+      .filter(x => x.j !== i)
+      .sort((p, q) => p.d - q.d)
+      .slice(0, 2)
+      .forEach(({ j }) => {
+        const k = i < j ? i + "-" + j : j + "-" + i;
+        if (seen.has(k)) return;
+        seen.add(k);
+        const b = c.buildings[j];
+        segs.push([[a.lat, a.lng], [b.lat, b.lng]]);
+      });
+  });
+  segs.forEach(s => L.polyline(s, { color: "#d9ccb3", weight: 7, opacity: .95, lineCap: "round", interactive: false }).addTo(paperLayer));
+  segs.forEach(s => L.polyline(s, { color: "#fffdf8", weight: 3.4, opacity: .95, lineCap: "round", interactive: false }).addTo(paperLayer));
+
+  // 5) 树点（固定伪随机，重绘不跳动）
+  function inPoly(la, ln) {
+    let inside = false;
+    for (let i = 0, j = c.boundary.length - 1; i < c.boundary.length; j = i++) {
+      const yi = c.boundary[i][0], xi = c.boundary[i][1];
+      const yj = c.boundary[j][0], xj = c.boundary[j][1];
+      if (((yi > la) !== (yj > la)) && (ln < (xj - xi) * (la - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  let placed = 0;
+  for (let k = 0; k < 1200 && placed < 55; k++) {
+    const r1 = Math.abs(Math.sin(k * 12.9898) * 43758.5453) % 1;
+    const r2 = Math.abs(Math.sin(k * 78.233) * 12345.6789) % 1;
+    const la = minLat + (maxLat - minLat) * r1;
+    const ln = minLng + (maxLng - minLng) * r2;
+    if (!inPoly(la, ln)) continue;
+    if (c.buildings.some(b => Math.abs(b.lat - la) < 0.00025 && Math.abs(b.lng - ln) < 0.00025)) continue;
+    placed++;
+    L.circleMarker([la, ln], {
+      radius: 3.2, color: "#7d9c6a", weight: 1, opacity: .7,
+      fillColor: "#a8c48f", fillOpacity: .85, interactive: false
+    }).addTo(paperLayer);
+  }
+
+  // 6) 建筑轮廓（类别配色 + 描边 + 屋脊线）
   c.buildings.forEach(b => {
     const big = ["标志建筑", "图书馆", "行政楼", "教学楼", "运动"].includes(b.cat);
-    const w = big ? 48 : 30, h = big ? 32 : 22;
+    const w = big ? 52 : 34, h = big ? 36 : 25;
     const dLat = h / mLat / 2, dLng = w / mLng / 2;
     const isLandmark = ["标志建筑", "图书馆", "校门"].includes(b.cat);
+    const col = PAPER_CAT[b.cat] || PAPER_CAT["其他"];
     L.rectangle([[b.lat - dLat, b.lng - dLng], [b.lat + dLat, b.lng + dLng]], {
-      color: t.brand, weight: isLandmark ? 2 : 1.2, opacity: isLandmark ? .95 : .7,
-      fillColor: t.brand, fillOpacity: isLandmark ? .38 : .18,
-      lineJoin: "round"
+      color: "#5a4a3a", weight: isLandmark ? 1.8 : 1.1, opacity: .75,
+      fillColor: col, fillOpacity: isLandmark ? .85 : .6, lineJoin: "round", interactive: false
     }).addTo(paperLayer);
+    L.polyline([[b.lat + dLat, b.lng - dLng], [b.lat + dLat * 0.35, b.lng], [b.lat + dLat, b.lng + dLng]],
+      { color: "#5a4a3a", weight: .9, opacity: .45, interactive: false }).addTo(paperLayer);
   });
-  // 地标/校门文字标签
+
+  // 7) 地标 / 校门 文字标签
   c.buildings.filter(b => ["标志建筑", "图书馆", "校门", "交通"].includes(b.cat)).forEach(b => {
     const icon = L.divIcon({
       className: "",
@@ -2725,6 +2825,30 @@ $("btnDemo").addEventListener("click", () => {
 $("btnRoute").addEventListener("click", planRoute);
 $("btnRouteClear").addEventListener("click", () => { clearRoute(); $("routeResult").textContent = "选择起终点，规划真实路网步行路线。"; });
 $("btnSchematic").addEventListener("click", () => setSchematicMode(!schematicOn));
+
+/* 工具面板：收起 / 展开（状态记忆，手机默认收起） */
+(function () {
+  const btn = $("btnToolsToggle"), panel = $("routePanel");
+  if (!btn || !panel) return;
+  const KEY = "tools-open-v1";
+  let open = null;
+  try { open = localStorage.getItem(KEY); } catch (e) { open = null; }
+  if (open !== "0" && open !== "1") open = window.innerWidth > 900 ? "1" : "0";
+  function apply(v) {
+    const isOpen = v === "1";
+    panel.classList.toggle("collapsed", !isOpen);
+    btn.classList.toggle("on", isOpen);
+    btn.textContent = "🧰";
+    btn.title = isOpen ? "收起工具面板" : "展开工具面板";
+  }
+  apply(open);
+  btn.addEventListener("click", () => {
+    open = open === "1" ? "0" : "1";
+    apply(open);
+    try { localStorage.setItem(KEY, open); } catch (e) {}
+    if (open === "1" && map) setTimeout(() => map.invalidateSize(), 60);
+  });
+})();
 
 $("btnExport").addEventListener("click", () => {
   const payload = { campus: currentCampus, events: state.events, custom: state.custom, notices: state.notices, exportedAt: new Date().toISOString() };
