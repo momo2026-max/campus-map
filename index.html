@@ -862,6 +862,22 @@ main {
   backdrop-filter: blur(8px);
   animation: pop-in .5s var(--ease-spring);
 }
+/* 手绘插画风：图名框 + 地名标签描白边 */
+.paper-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: #6b5942;
+  background: rgba(255, 252, 244, .94);
+  border: 1.5px solid #d8c9ad;
+  border-radius: 10px;
+  padding: 5px 11px;
+  white-space: nowrap;
+  box-shadow: 0 3px 9px rgba(120, 100, 70, .18);
+}
+.m-label {
+  text-shadow: 0 1px 0 #fffdf6, 0 0 5px #fffdf6, 0 0 2px #fffdf6;
+}
 /* 工具面板：可收起 */
 .tools-toggle {
   position: absolute;
@@ -880,11 +896,15 @@ main {
   box-shadow: var(--shadow);
   font-size: 20px;
   line-height: 1;
-  cursor: pointer;
-  transition: all .22s var(--ease-spring);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: box-shadow .22s, background .22s, color .22s;
   backdrop-filter: blur(8px);
 }
-.tools-toggle:hover { transform: translateY(-2px) scale(1.06); }
+.tools-toggle:hover { box-shadow: 0 10px 24px rgba(0,0,0,.22); }
+.tools-toggle:active { cursor: grabbing; }
 .tools-toggle.on { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
 .map-overlay.collapsed { display: none; }
 .map-overlay h3 { margin: 0 0 10px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
@@ -1872,13 +1892,17 @@ function setSchematicMode(on) {
   if (on) {
     Object.values(baseLayers).forEach(l => map.removeLayer(l));
     if (maskLayer) maskLayer.clearLayers();
-    // 地图底色换成高对比色，纸面一眼可见
-    if (mapEl) mapEl.style.background = th().paperLine;
+    // 纸纹底（CSS 点阵，透出纸质感）
+    if (mapEl) {
+      mapEl.style.background = "#f4ead6";
+      mapEl.style.backgroundImage = "radial-gradient(rgba(196,176,140,.22) 1px, transparent 1.6px)";
+      mapEl.style.backgroundSize = "13px 13px";
+    }
     drawPaper();
     if (rr) rr.innerHTML = "<strong>🧭 手绘校园图已开启</strong>：纸面、建筑色块、道路、标签全部本地绘制，任意缩放都不会消失。";
   } else {
     paperLayer.clearLayers();
-    if (mapEl) mapEl.style.background = "";
+    if (mapEl) { mapEl.style.background = ""; mapEl.style.backgroundImage = ""; mapEl.style.backgroundSize = ""; }
     drawMask();
     baseLayers["卫星图（Esri）"].addTo(map);
     if (rr) rr.textContent = "选择起终点，规划真实路网步行路线。";
@@ -1911,13 +1935,47 @@ function drawMask() {
   L.polygon([outer, inner], { stroke: false, fillColor: t.ink, fillOpacity: .42, interactive: false }).addTo(maskLayer);
 }
 
-/* 手绘校园图配色（按建筑类别） */
+/* 手绘插画风配色（按建筑类别） */
 const PAPER_CAT = {
-  "标志建筑": "#c0553f", "图书馆": "#b8860b", "教学楼": "#8a6fb0",
-  "食堂": "#d98a3a", "宿舍": "#5f8f6a", "运动": "#3f8fa8",
-  "校门": "#a0522d", "交通": "#5f7080", "医疗": "#c05a7a",
-  "行政楼": "#7a6a9a", "其他": "#9a8a72"
+  "标志建筑": "#d4756a", "图书馆": "#e0a44e", "教学楼": "#a68fc4",
+  "食堂": "#e4a45f", "宿舍": "#93b98a", "运动": "#7fb3c9",
+  "校门": "#b07a5a", "交通": "#8fa3ad", "医疗": "#d98aa4",
+  "行政楼": "#9c8ac0", "其他": "#c2ab8e"
 };
+const PAPER_BIG = ["标志建筑", "图书馆", "行政楼", "教学楼", "运动"];
+
+/* 确定性抖动：线条像手绘，重绘不跳动 */
+function paperWob(seed) {
+  return (Math.abs(Math.sin(seed * 12.9898) * 43758.5453) % 1) - 0.5;
+}
+function paperJitter(ring, amp, seedBase) {
+  const out = [];
+  for (let i = 1; i < ring.length; i++) {
+    const a = ring[i - 1], b = ring[i];
+    const dLat = b[0] - a[0], dLng = b[1] - a[1];
+    const len = Math.sqrt(dLat * dLat + dLng * dLng) || 1e-9;
+    const pLat = -dLng / len, pLng = dLat / len;
+    for (let k = 0; k < 3; k++) {
+      const tt = k / 3;
+      const off = (i === 1 && k === 0) ? 0 : paperWob(seedBase + i * 7.3 + k * 2.1) * amp;
+      out.push([a[0] + dLat * tt + pLat * off, a[1] + dLng * tt + pLng * off]);
+    }
+  }
+  out.push(ring[ring.length - 1]);
+  return out;
+}
+function paperRingBox(lat, lng, dLat, dLng) {
+  return [[lat - dLat, lng - dLng], [lat - dLat, lng + dLng], [lat + dLat, lng + dLng], [lat + dLat, lng - dLng], [lat - dLat, lng - dLng]];
+}
+function paperInPoly(ring, la, ln) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0], xi = ring[i][1];
+    const yj = ring[j][0], xj = ring[j][1];
+    if (((yi > la) !== (yj > la)) && (ln < (xj - xi) * (la - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
 
 function drawPaper() {
   const c = CAMPUSES[currentCampus], t = th();
@@ -1928,12 +1986,12 @@ function drawPaper() {
   const minLng = Math.min(...xs) - pad, maxLng = Math.max(...xs) + pad;
   const mLat = 111320, mLng = 111320 * Math.cos(c.center[0] * Math.PI / 180);
 
-  // 1) 纸面（测绘纸）
+  // 1) 纸面：半透明奶油纸，透出底层纸纹点阵
   L.rectangle([[minLat, minLng], [maxLat, maxLng]], {
-    color: "#e0d6c2", weight: 2, opacity: .9, fillColor: "#fdfbf5", fillOpacity: 1, interactive: false
+    color: "#d9c9ab", weight: 2.5, opacity: .85, fillColor: "#fdf8ec", fillOpacity: .8, interactive: false
   }).addTo(paperLayer);
 
-  // 2) 方格底纹
+  // 2) 极淡方格（手绘坐标纸）
   const gridLines = [];
   for (let i = 1; i < 12; i++) {
     const la = minLat + (maxLat - minLat) * i / 12;
@@ -1943,16 +2001,22 @@ function drawPaper() {
     const ln = minLng + (maxLng - minLng) * j / 12;
     gridLines.push([[minLat, ln], [maxLat, ln]]);
   }
-  gridLines.forEach(g => L.polyline(g, { color: "#ece4d4", weight: 1, opacity: .85, interactive: false }).addTo(paperLayer));
+  gridLines.forEach(g => L.polyline(g, { color: "#eadfc8", weight: 1, opacity: .55, interactive: false }).addTo(paperLayer));
 
-  // 3) 草地（校园边界）+ 手绘描边
+  // 3) 草地：柔和草绿 + 手绘双层边界
   L.polygon(c.boundary, {
-    color: "#8fae7a", weight: 2.5, opacity: .85, dashArray: "7 6",
-    fillColor: "#e2ecd4", fillOpacity: .92, interactive: false
+    color: "#a8c48c", weight: 1.6, opacity: .9,
+    fillColor: "#dcebc4", fillOpacity: .85, interactive: false
   }).addTo(paperLayer);
-  L.polygon(c.boundary, { color: t.brand, weight: 8, opacity: .07, fill: false, interactive: false }).addTo(paperLayer);
+  const boundaryClosed = c.boundary.concat([c.boundary[0]]);
+  L.polyline(paperJitter(boundaryClosed, 0.00009, 11), {
+    color: "#8fb072", weight: 3.2, opacity: .9, lineCap: "round", lineJoin: "round", interactive: false
+  }).addTo(paperLayer);
+  L.polyline(paperJitter(boundaryClosed, 0.00014, 29), {
+    color: "#b7cf9c", weight: 1.4, opacity: .8, lineCap: "round", interactive: false
+  }).addTo(paperLayer);
 
-  // 4) 路网：每栋建筑连最近的 2 栋，双描边做出马路质感
+  // 4) 路网：主路（连大地标）+ 小路（手绘虚线）
   const segs = [], seen = new Set();
   c.buildings.forEach((a, i) => {
     c.buildings
@@ -1965,53 +2029,55 @@ function drawPaper() {
         if (seen.has(k)) return;
         seen.add(k);
         const b = c.buildings[j];
-        segs.push([[a.lat, a.lng], [b.lat, b.lng]]);
+        segs.push({ a: a, b: b, main: PAPER_BIG.includes(a.cat) && PAPER_BIG.includes(b.cat), seed: i * 13 + j });
       });
   });
-  segs.forEach(s => L.polyline(s, { color: "#d9ccb3", weight: 7, opacity: .95, lineCap: "round", interactive: false }).addTo(paperLayer));
-  segs.forEach(s => L.polyline(s, { color: "#fffdf8", weight: 3.4, opacity: .95, lineCap: "round", interactive: false }).addTo(paperLayer));
+  segs.filter(s => !s.main).forEach(s => {
+    L.polyline(paperJitter([[s.a.lat, s.a.lng], [s.b.lat, s.b.lng]], 0.00007, s.seed + 3), {
+      color: "#dccdae", weight: 2.2, opacity: .9, dashArray: "1 6", lineCap: "round", interactive: false
+    }).addTo(paperLayer);
+  });
+  segs.filter(s => s.main).forEach(s => {
+    const line = paperJitter([[s.a.lat, s.a.lng], [s.b.lat, s.b.lng]], 0.00006, s.seed + 5);
+    L.polyline(line, { color: "#e3d2ae", weight: 8.5, opacity: .95, lineCap: "round", lineJoin: "round", interactive: false }).addTo(paperLayer);
+    L.polyline(line, { color: "#fffdf5", weight: 5, opacity: .95, lineCap: "round", lineJoin: "round", interactive: false }).addTo(paperLayer);
+    L.polyline(line, { color: "#f0e2c4", weight: 1.2, opacity: .8, dashArray: "5 7", interactive: false }).addTo(paperLayer);
+  });
 
-  // 5) 树点（固定伪随机，重绘不跳动）
-  function inPoly(la, ln) {
-    let inside = false;
-    for (let i = 0, j = c.boundary.length - 1; i < c.boundary.length; j = i++) {
-      const yi = c.boundary[i][0], xi = c.boundary[i][1];
-      const yj = c.boundary[j][0], xj = c.boundary[j][1];
-      if (((yi > la) !== (yj > la)) && (ln < (xj - xi) * (la - yi) / (yj - yi) + xi)) inside = !inside;
-    }
-    return inside;
-  }
+  // 5) 树丛（确定性散布）
   let placed = 0;
-  for (let k = 0; k < 1200 && placed < 55; k++) {
+  for (let k = 0; k < 1600 && placed < 62; k++) {
     const r1 = Math.abs(Math.sin(k * 12.9898) * 43758.5453) % 1;
     const r2 = Math.abs(Math.sin(k * 78.233) * 12345.6789) % 1;
     const la = minLat + (maxLat - minLat) * r1;
     const ln = minLng + (maxLng - minLng) * r2;
-    if (!inPoly(la, ln)) continue;
-    if (c.buildings.some(b => Math.abs(b.lat - la) < 0.00025 && Math.abs(b.lng - ln) < 0.00025)) continue;
+    if (!paperInPoly(c.boundary, la, ln)) continue;
+    if (c.buildings.some(b => Math.abs(b.lat - la) < 0.00028 && Math.abs(b.lng - ln) < 0.00028)) continue;
     placed++;
-    L.circleMarker([la, ln], {
-      radius: 3.2, color: "#7d9c6a", weight: 1, opacity: .7,
-      fillColor: "#a8c48f", fillOpacity: .85, interactive: false
-    }).addTo(paperLayer);
+    L.circleMarker([la, ln], { radius: 4.2, color: "#7fa361", weight: 1.2, opacity: .75, fillColor: "#a8c98a", fillOpacity: .9, interactive: false }).addTo(paperLayer);
+    L.circleMarker([la - 0.00002, ln - 0.00002], { radius: 1.7, color: "transparent", weight: 0, fillColor: "#cfe6ae", fillOpacity: .95, interactive: false }).addTo(paperLayer);
   }
 
-  // 6) 建筑轮廓（类别配色 + 描边 + 屋脊线）
-  c.buildings.forEach(b => {
-    const big = ["标志建筑", "图书馆", "行政楼", "教学楼", "运动"].includes(b.cat);
-    const w = big ? 52 : 34, h = big ? 36 : 25;
+  // 6) 建筑：投影 + 主体（手绘抖动轮廓）+ 屋脊
+  c.buildings.forEach((b, bi) => {
+    const big = PAPER_BIG.includes(b.cat);
+    const w = big ? 54 : 34, h = big ? 38 : 25;
     const dLat = h / mLat / 2, dLng = w / mLng / 2;
     const isLandmark = ["标志建筑", "图书馆", "校门"].includes(b.cat);
     const col = PAPER_CAT[b.cat] || PAPER_CAT["其他"];
-    L.rectangle([[b.lat - dLat, b.lng - dLng], [b.lat + dLat, b.lng + dLng]], {
-      color: "#5a4a3a", weight: isLandmark ? 1.8 : 1.1, opacity: .75,
-      fillColor: col, fillOpacity: isLandmark ? .85 : .6, lineJoin: "round", interactive: false
+    L.polygon(paperRingBox(b.lat - 0.000035, b.lng + 0.000045, dLat, dLng), {
+      stroke: false, fillColor: "#6b5a44", fillOpacity: .16, interactive: false
     }).addTo(paperLayer);
-    L.polyline([[b.lat + dLat, b.lng - dLng], [b.lat + dLat * 0.35, b.lng], [b.lat + dLat, b.lng + dLng]],
-      { color: "#5a4a3a", weight: .9, opacity: .45, interactive: false }).addTo(paperLayer);
+    L.polygon(paperJitter(paperRingBox(b.lat, b.lng, dLat, dLng), 0.000045, bi * 3.7 + 1), {
+      color: "#5e4a38", weight: isLandmark ? 1.9 : 1.2, opacity: .8,
+      fillColor: col, fillOpacity: isLandmark ? .95 : .78, lineJoin: "round", interactive: false
+    }).addTo(paperLayer);
+    L.polyline(paperJitter([[b.lat + dLat, b.lng - dLng], [b.lat + dLat * 0.3, b.lng], [b.lat + dLat, b.lng + dLng]], 0.00003, bi * 5.1 + 2), {
+      color: "#5e4a38", weight: 1, opacity: .5, interactive: false
+    }).addTo(paperLayer);
   });
 
-  // 7) 地标 / 校门 文字标签
+  // 7) 地名标签 + 图名框
   c.buildings.filter(b => ["标志建筑", "图书馆", "校门", "交通"].includes(b.cat)).forEach(b => {
     const icon = L.divIcon({
       className: "",
@@ -2020,6 +2086,12 @@ function drawPaper() {
     });
     L.marker([b.lat, b.lng], { icon, interactive: false }).addTo(paperLayer);
   });
+  const cart = L.divIcon({
+    className: "",
+    html: `<div class="paper-title">🖌 ${escapeHtml(c.short)} · 手绘导览图</div>`,
+    iconSize: [0, 0], iconAnchor: [0, 0]
+  });
+  L.marker([maxLat - pad * 0.28, minLng + pad * 0.20], { icon: cart, interactive: false }).addTo(paperLayer);
 }
 
 function renderCampusMap() {
@@ -2826,11 +2898,13 @@ $("btnRoute").addEventListener("click", planRoute);
 $("btnRouteClear").addEventListener("click", () => { clearRoute(); $("routeResult").textContent = "选择起终点，规划真实路网步行路线。"; });
 $("btnSchematic").addEventListener("click", () => setSchematicMode(!schematicOn));
 
-/* 工具面板：收起 / 展开（状态记忆，手机默认收起） */
+/* 工具面板：收起 / 展开（状态记忆，手机默认收起）+ 按钮可拖动、位置记忆 */
 (function () {
   const btn = $("btnToolsToggle"), panel = $("routePanel");
   if (!btn || !panel) return;
-  const KEY = "tools-open-v1";
+  const KEY = "tools-open-v1", PKEY = "tools-pos-v1";
+
+  /* —— 展开 / 收起 —— */
   let open = null;
   try { open = localStorage.getItem(KEY); } catch (e) { open = null; }
   if (open !== "0" && open !== "1") open = window.innerWidth > 900 ? "1" : "0";
@@ -2839,14 +2913,73 @@ $("btnSchematic").addEventListener("click", () => setSchematicMode(!schematicOn)
     panel.classList.toggle("collapsed", !isOpen);
     btn.classList.toggle("on", isOpen);
     btn.textContent = "🧰";
-    btn.title = isOpen ? "收起工具面板" : "展开工具面板";
+    btn.title = (isOpen ? "收起工具面板" : "展开工具面板") + "（按住可拖动）";
   }
   apply(open);
-  btn.addEventListener("click", () => {
+  function toggle() {
     open = open === "1" ? "0" : "1";
     apply(open);
     try { localStorage.setItem(KEY, open); } catch (e) {}
     if (open === "1" && map) setTimeout(() => map.invalidateSize(), 60);
+  }
+
+  /* —— 拖动 + 位置记忆 —— */
+  function place(l, t) {
+    const host = btn.parentElement;
+    const w = (host && host.clientWidth) || window.innerWidth;
+    const h = (host && host.clientHeight) || window.innerHeight;
+    const s = btn.offsetWidth || 44;
+    const nl = Math.max(6, Math.min(l, w - s - 6));
+    const nt = Math.max(6, Math.min(t, h - s - 6));
+    btn.style.left = nl + "px";
+    btn.style.top = nt + "px";
+    return { l: nl, t: nt };
+  }
+  let hasPos = false;
+  try {
+    const p = JSON.parse(localStorage.getItem(PKEY) || "null");
+    if (p && typeof p.l === "number" && typeof p.t === "number") { place(p.l, p.t); hasPos = true; }
+  } catch (e) {}
+  window.addEventListener("resize", () => { if (hasPos) place(btn.offsetLeft, btn.offsetTop); });
+
+  let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  btn.addEventListener("pointerdown", e => {
+    dragging = true; moved = false;
+    sx = e.clientX; sy = e.clientY;
+    ox = btn.offsetLeft; oy = btn.offsetTop;
+    try { btn.setPointerCapture(e.pointerId); } catch (err) {}
+    e.stopPropagation();
+    if (e.cancelable) e.preventDefault();
+  });
+  btn.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) moved = true;
+    if (moved) { place(ox + dx, oy + dy); hasPos = true; }
+    e.stopPropagation();
+  });
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    if (moved) {
+      try { localStorage.setItem(PKEY, JSON.stringify({ l: btn.offsetLeft, t: btn.offsetTop })); } catch (err) {}
+    } else {
+      toggle();
+    }
+    if (e && e.stopPropagation) e.stopPropagation();
+  }
+  btn.addEventListener("pointerup", endDrag);
+  btn.addEventListener("pointercancel", endDrag);
+  btn.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  /* 双击回到默认位置 */
+  btn.addEventListener("dblclick", e => {
+    e.stopPropagation();
+    try { localStorage.removeItem(PKEY); } catch (err) {}
+    hasPos = false;
+    btn.style.left = "14px";
+    btn.style.top = "14px";
   });
 })();
 
